@@ -82,34 +82,41 @@ export default function App() {
 
   return (
     <div className="app">
-      <Board onInspect={inspectCell} onInspectCard={inspectCard} />
+      <header className="app__header">
+        <Hud shopLocked={shopLocked} onOpenShop={() => setShopOpen(true)} />
+      </header>
 
-      {shopVisible && <div className="board-blur" onClick={() => setShopOpen(false)} />}
+      <div className="app__board-pane">
+        <Board onInspect={inspectCell} onInspectCard={inspectCard} />
 
-      <div className="ui-overlay">
-        <Hud
-          shopLocked={shopLocked}
-          onOpenShop={() => setShopOpen(true)}
-        />
-
-        <Shop open={shopVisible} onClose={() => setShopOpen(false)} />
-
-        {inspectorOpen && (
-          <Inspector
-            selectedCardId={selectedCardId}
-            onClose={() => {
-              setInspectorOpen(false);
-              setSelectedCardId(null);
-              selectCell(null);
-            }}
-          />
-        )}
-
-        <Carousel />
-
-        <Toasts />
-        <PhaseOverlay />
+        <div className="ui-overlay">
+          <Toasts />
+        </div>
       </div>
+
+      <div className="app__hand-pane">
+        <Carousel />
+      </div>
+
+      {/* Full-screen modals live at the app root so they stack above BOTH the
+          board pane and the hand pane (each of which is its own stacking
+          context). Nesting them in the board pane hid their lower edge — e.g.
+          the shop's Ready button — behind the hand pane. */}
+      {shopVisible && <div className="board-blur" onClick={() => setShopOpen(false)} />}
+      <Shop open={shopVisible} onClose={() => setShopOpen(false)} />
+
+      {inspectorOpen && (
+        <Inspector
+          selectedCardId={selectedCardId}
+          onClose={() => {
+            setInspectorOpen(false);
+            setSelectedCardId(null);
+            selectCell(null);
+          }}
+        />
+      )}
+
+      <PhaseOverlay />
     </div>
   );
 }

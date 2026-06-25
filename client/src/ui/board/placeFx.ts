@@ -3,7 +3,11 @@
  * have weight: it kicks up dust and squashes on impact. Airy cards (a breeze)
  * blow a gust across the grid. These are the tactile rewards that make dropping
  * a card satisfying rather than a silent state change.
+ *
+ * Dust/gusts use board-local coordinates and live in the camera-transformed fx
+ * layer, so they pan (and scale) with the board.
  */
+import { fxParent } from "./fxRoot";
 
 const reduce =
   typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion:reduce)").matches;
@@ -12,7 +16,7 @@ let active = 0;
 const MAX_ACTIVE = 80;
 function add(el: HTMLElement): boolean {
   if (active >= MAX_ACTIVE) return false;
-  document.body.appendChild(el);
+  fxParent().appendChild(el);
   active++;
   return true;
 }

@@ -1,6 +1,13 @@
-import { EntityKind, SHOP_CARD_IDS, Weather } from "@tower/shared";
+import { EntityKind } from "@tower/shared";
 import { BALANCE } from "../config/balance.js";
-import { BOSS_FAMILY, OBSTACLE_FAMILY, pickMinionArchetype } from "../config/bestiary.js";
+import {
+  MinionArchetype,
+  OBSTACLE_FAMILY,
+  archetypeById,
+} from "../config/bestiary.js";
+import { BiomeDef, biomeForFloor, isBossFloor } from "../config/biomes.js";
+import { BOSSES } from "../config/bosses.js";
+import { chestRewardPool } from "../config/progression.js";
 import { EntityState } from "../schema/EntityState.js";
 import { GameState } from "../schema/GameState.js";
 import { cellKey, footprintCells } from "./grid.js";
@@ -11,21 +18,51 @@ function newEntityId(kind: string): string {
   return `${kind}_${entityCounter}`;
 }
 
-const WEATHERS = [
-  Weather.Clear,
-  Weather.Rain,
-  Weather.Storm,
-  Weather.Snow,
-  Weather.Fog,
-  Weather.Heat,
-];
-
 function pick<T>(arr: readonly T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
 function randInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+/** The in-bounds cells immediately surrounding a footprint (its 1-cell ring). */
+function ringCells(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  boardW: number,
+  boardH: number,
+): { x: number; y: number }[] {
+  const out: { x: number; y: number }[] = [];
+  for (let cy = y - 1; cy <= y + h; cy++) {
+    for (let cx = x - 1; cx <= x + w; cx++) {
+      const inside = cx >= x && cx < x + w && cy >= y && cy < y + h;
+      if (inside) continue;
+      if (cx < 0 || cy < 0 || cx >= boardW || cy >= boardH) continue;
+      out.push({ x: cx, y: cy });
+    }
+  }
+  return out;
+}
+
+/**
+ * Weighted minion pick from a biome's archetype table, respecting each
+ * archetype's own minFloor so early floors stay clean.
+ */
+function pickBiomeMinion(biome: BiomeDef, floor: number): MinionArchetype {
+  const eligible = biome.archetypes
+    .map((a) => ({ arch: archetypeById(a.id), weight: a.weight }))
+    .filter((a): a is { arch: MinionArchetype; weight: number } => !!a.arch && floor >= a.arch.minFloor);
+  const pool = eligible.length > 0 ? eligible : [{ arch: archetypeById("grunt")!, weight: 1 }];
+  const total = pool.reduce((s, a) => s + a.weight, 0);
+  let roll = Math.random() * total;
+  for (const a of pool) {
+    roll -= a.weight;
+    if (roll <= 0) return a.arch;
+  }
+  return pool[pool.length - 1].arch;
 }
 
 /**
@@ -37,7 +74,11 @@ export function generateFloor(state: GameState, floor: number): void {
   state.entities.clear();
   state.keyAcquired = false;
   state.floor = floor;
-  state.weather = pick(WEATHERS);
+
+  // Biome/theme for this band drives weather, terrain, enemy mix, and the boss.
+  const biome = biomeForFloor(floor);
+  state.biome = biome.id;
+  state.weather = pick(biome.weathers);
 
   // Board grows with the floor; floor 1 is compact so foes are reachable.
   state.boardWidth = BALANCE.board.width(floor);
@@ -68,29 +109,74 @@ export function generateFloor(state: GameState, floor: number): void {
     return null;
   };
 
-  // --- Boss (top region) holds the key to the next floor. ---
-  const boss = new EntityState();
-  boss.entityId = newEntityId("boss");
-  boss.kind = EntityKind.Boss;
-  boss.family = BOSS_FAMILY;
-  boss.art = "goblin_knight";
-  boss.w = 3;
-  boss.h = 3;
-  const bossSpot = freeSpot(3, 3, (_x, y) => y < Math.max(3, Math.floor(H * 0.3))) ?? {
-    x: Math.floor(W / 2) - 1,
-    y: 0,
-  };
-  boss.x = bossSpot.x;
-  boss.y = bossSpot.y;
-  boss.maxHealth = BALANCE.boss.baseHealth + floor * BALANCE.boss.healthPerFloor;
-  boss.health = boss.maxHealth;
-  boss.attackPower = BALANCE.boss.baseAttack + floor * BALANCE.boss.attackPerFloor;
-  boss.cooldownTotalMs = BALANCE.boss.cooldownMs;
-  boss.cooldownRemainingMs = BALANCE.boss.cooldownMs;
-  boss.baseCooldownMs = BALANCE.boss.cooldownMs;
-  boss.blocking = true;
-  boss.rewardGold = BALANCE.boss.baseRewardGold + floor * BALANCE.boss.rewardGoldPerFloor;
-  reserve(boss);
+  // --- Boss (band finale): holds the key, ringed by guardians. ---
+  // Only the last floor of a band spawns a boss. On the other floors the key is
+  // earned by clearing the floor's foes (handled in combat's cleanupDead).
+  if (isBossFloor(floor)) {
+    const def = BOSSES[biome.bossId];
+    const boss = new EntityState();
+    boss.entityId = newEntityId("boss");
+    boss.kind = EntityKind.Boss;
+    boss.family = def.family;
+    boss.art = def.art;
+    boss.w = def.w;
+    boss.h = def.h;
+    const bossSpot = freeSpot(def.w, def.h, (_x, y) => y < Math.max(def.h, Math.floor(H * 0.3))) ?? {
+      x: Math.max(0, Math.floor(W / 2) - 1),
+      y: 0,
+    };
+    boss.x = bossSpot.x;
+    boss.y = bossSpot.y;
+    boss.maxHealth = BALANCE.boss.baseHealth + floor * BALANCE.boss.healthPerFloor;
+    boss.health = boss.maxHealth;
+    boss.attackPower = BALANCE.boss.baseAttack + floor * BALANCE.boss.attackPerFloor;
+    boss.cooldownTotalMs = BALANCE.boss.cooldownMs;
+    boss.cooldownRemainingMs = BALANCE.boss.cooldownMs;
+    boss.baseCooldownMs = BALANCE.boss.cooldownMs;
+    boss.blocking = true;
+    boss.rewardGold = BALANCE.boss.baseRewardGold + floor * BALANCE.boss.rewardGoldPerFloor;
+    // Signature ability fires on its own cadence (first cast after one period).
+    boss.signature = def.signature;
+    boss.signatureTotalMs = def.signatureCooldownMs;
+    boss.signatureRemainingMs = def.signatureCooldownMs;
+    boss.signatureRadius = def.signatureRadius;
+    reserve(boss);
+
+    // Guardians ring the boss; it stays invulnerable until they all fall.
+    const g = def.guardians;
+    let placedGuards = 0;
+    const ring = ringCells(boss.x, boss.y, boss.w, boss.h, W, H);
+    for (const c of ring) {
+      if (placedGuards >= g.count) break;
+      if (occupied.has(cellKey(c.x, c.y))) continue;
+      const guard = new EntityState();
+      guard.entityId = newEntityId("guard");
+      guard.kind = EntityKind.Minion;
+      guard.bossGuard = true;
+      guard.family = g.family;
+      guard.art = g.art;
+      guard.w = 1;
+      guard.h = 1;
+      guard.x = c.x;
+      guard.y = c.y;
+      guard.maxHealth = Math.round(
+        (BALANCE.minion.baseHealth + floor * BALANCE.minion.healthPerFloor) * g.hpMult,
+      );
+      guard.health = guard.maxHealth;
+      guard.attackPower = Math.max(
+        1,
+        Math.round((BALANCE.minion.baseAttack + floor * BALANCE.minion.attackPerFloor) * g.atkMult),
+      );
+      guard.cooldownTotalMs = BALANCE.minion.cooldownMs;
+      guard.cooldownRemainingMs = randInt(500, BALANCE.minion.cooldownMs);
+      guard.baseCooldownMs = BALANCE.minion.cooldownMs;
+      guard.blocking = true;
+      guard.rewardGold = BALANCE.minion.baseRewardGold;
+      reserve(guard);
+      placedGuards++;
+    }
+    boss.invulnerable = placedGuards > 0;
+  }
 
   // --- Door to next floor (opens once key acquired). ---
   const door = new EntityState();
@@ -110,7 +196,7 @@ export function generateFloor(state: GameState, floor: number): void {
   for (let i = 0; i < minionCount; i++) {
     const spot = freeSpot(2, 2, (_x, y) => y >= 2);
     if (!spot) break;
-    const arch = pickMinionArchetype(floor, Math.random);
+    const arch = pickBiomeMinion(biome, floor);
     const m = new EntityState();
     m.entityId = newEntityId("minion");
     m.kind = EntityKind.Minion;
@@ -146,7 +232,7 @@ export function generateFloor(state: GameState, floor: number): void {
     const o = new EntityState();
     o.entityId = newEntityId("obstacle");
     o.kind = EntityKind.Obstacle;
-    o.art = pick(["rock", "rubble", "tree", "crystal"]);
+    o.art = pick(biome.obstacleArt);
     o.family = OBSTACLE_FAMILY[o.art] ?? "";
     o.x = spot.x;
     o.y = spot.y;
@@ -172,7 +258,7 @@ export function generateFloor(state: GameState, floor: number): void {
     ch.blocking = true;
     ch.hidden = Math.random() < 0.4;
     ch.rewardGold = randInt(5, 15) + floor * 2;
-    ch.rewardCardId = pick(SHOP_CARD_IDS);
+    ch.rewardCardId = pick(chestRewardPool(floor));
     reserve(ch);
   }
 

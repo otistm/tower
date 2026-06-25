@@ -58,7 +58,23 @@ export const MINION_ARCHETYPES: readonly MinionArchetype[] = [
     minFloor: 2,
     weight: 2,
   },
+  {
+    id: "frostling",
+    name: "Frost Goblin",
+    family: CardType.Stuff,
+    art: "goblin",
+    healthMult: 1.9,
+    attackMult: 0.9,
+    cooldownMult: 1.15,
+    minFloor: 7,
+    weight: 3,
+  },
 ] as const;
+
+/** Look up an archetype by id (used by biome-specific spawn tables). */
+export function archetypeById(id: string): MinionArchetype | undefined {
+  return MINION_ARCHETYPES.find((a) => a.id === id);
+}
 
 /** The boss is an armored knight: Stuff. Boom (fire) is the way through plate. */
 export const BOSS_FAMILY: CardType = CardType.Stuff;

@@ -1,13 +1,57 @@
+import {
+  AbilityKind,
+  CARD_CATALOG,
+  CardTier,
+  getTierStats,
+  rangeCells,
+} from "@tower/shared";
 import { GameSnapshot } from "../../network/types";
 import { Camera } from "./camera";
 import { STRIDE, cardPx } from "./constants";
 import { canPlace } from "./grid";
+
+/** Abilities whose reach is worth previewing while dragging, best first. */
+const PREVIEW_ABILITY_PRIORITY = [
+  AbilityKind.Attack,
+  AbilityKind.Heal,
+  AbilityKind.Debuff,
+  AbilityKind.Buff,
+  AbilityKind.Shield,
+];
+
+/** Cells a card would attack/affect from a candidate placement (for the hover hint). */
+function previewCellsFor(
+  defId: string,
+  tier: number,
+  col: number,
+  row: number,
+  w: number,
+  h: number,
+  boardW: number,
+  boardH: number,
+): { x: number; y: number }[] {
+  const def = CARD_CATALOG[defId];
+  if (!def) return [];
+  const abilities = getTierStats(def, tier as CardTier).abilities;
+  let ability = null as (typeof abilities)[number] | null;
+  for (const kind of PREVIEW_ABILITY_PRIORITY) {
+    const found = abilities.find((a) => a.kind === kind);
+    if (found) {
+      ability = found;
+      break;
+    }
+  }
+  if (!ability) return [];
+  return rangeCells({ x: col, y: row, w, h }, ability.shape, ability.range ?? 1, boardW, boardH);
+}
 
 /** Slack (board px) around the board edges that still counts as "over the board". */
 const CELL_PAD = 90;
 
 export interface DragInfo {
   instanceId: string;
+  defId: string;
+  tier: number;
   w: number;
   h: number;
   /** "hand" | "board" - where the drag started. */
@@ -32,6 +76,8 @@ interface Registration {
   onPickup: (instanceId: string) => void;
   /** A click/tap (no real drag): show the card's info instead of moving it. */
   onTap: (instanceId: string) => void;
+  /** Report the cells the dragged card would attack/affect (drag-time hint). */
+  onPreviewCells: (cells: { x: number; y: number }[]) => void;
 }
 
 interface ActiveDrag extends DragInfo {
@@ -87,9 +133,9 @@ class DragController {
     const fx = (e.clientX - rect.left) / rect.width;
     const fy = (e.clientY - rect.top) / rect.height;
 
-    const z = reg.camera.z;
-    const cloneW = cardPx(info.w) * z;
-    const cloneH = cardPx(info.h) * z;
+    const { zx, zy } = reg.camera;
+    const cloneW = cardPx(info.w) * zx;
+    const cloneH = cardPx(info.h) * zy;
 
     const clone = info.sourceEl.cloneNode(true) as HTMLElement;
     clone.className = "drag-clone";
@@ -133,7 +179,7 @@ class DragController {
     const snapshot = reg.getSnapshot();
     if (!snapshot) return;
 
-    const z = reg.camera.z;
+    const { zx, zy } = reg.camera;
     if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) > DRAG_THRESHOLD) d.moved = true;
 
     // Until it's a real drag, keep everything hidden: a tap shows info, not a move.
@@ -150,11 +196,11 @@ class DragController {
       if (d.owned && reg.isShopping()) reg.sellzoneEl.classList.add("show");
     }
 
-    // Keep the grabbed point under the pointer at the current zoom.
-    d.clone.style.left = `${e.clientX - d.gx * z}px`;
-    d.clone.style.top = `${e.clientY - d.gy * z}px`;
-    d.clone.style.width = `${cardPx(d.w) * z}px`;
-    d.clone.style.height = `${cardPx(d.h) * z}px`;
+    // Keep the grabbed point under the pointer at the current scale.
+    d.clone.style.left = `${e.clientX - d.gx * zx}px`;
+    d.clone.style.top = `${e.clientY - d.gy * zy}px`;
+    d.clone.style.width = `${cardPx(d.w) * zx}px`;
+    d.clone.style.height = `${cardPx(d.h) * zy}px`;
 
     // Sell zone hover (owned cards, during shopping only).
     if (d.owned && reg.isShopping()) {
@@ -185,6 +231,7 @@ class DragController {
     const preview = reg.previewEl;
     if (!within) {
       preview.style.opacity = "0";
+      reg.onPreviewCells([]);
       return;
     }
     preview.style.opacity = "1";
@@ -192,6 +239,10 @@ class DragController {
     preview.style.height = `${cardPx(d.h)}px`;
     preview.style.transform = `translate(${col * STRIDE}px,${row * STRIDE}px)`;
     preview.className = d.valid ? "board-preview ok" : "board-preview bad";
+
+    reg.onPreviewCells(
+      previewCellsFor(d.defId, d.tier, col, row, d.w, d.h, snapshot.boardWidth, snapshot.boardHeight),
+    );
   };
 
   private end = (e: PointerEvent): void => {
@@ -251,6 +302,7 @@ class DragController {
     if (reg) {
       reg.previewEl.style.opacity = "0";
       reg.sellzoneEl.classList.remove("show", "hot");
+      reg.onPreviewCells([]);
     }
     if (this.drag) this.drag.sourceEl.classList.remove("lifted");
     window.removeEventListener("pointermove", this.move);

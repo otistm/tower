@@ -79,6 +79,7 @@ export const CARD_CATALOG: Record<string, CardDef> = {
             target: TargetTeam.Enemies,
             shape: TargetShape.Nearest,
             range: 3,
+            aoe: true,
             lifesteal: 0.4,
             description: "A devastating maul that can strike several foes and feast on them.",
           },

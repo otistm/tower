@@ -57,4 +57,23 @@ export class EntityState extends Schema {
 
   /** For transient entities (scorched terrain): ms left before it fades. */
   @type("float32") lifetimeMs: number = 0;
+
+  // --- Boss / guardian mechanics ---
+  /**
+   * While true, this entity ignores all incoming damage. Bosses spawn
+   * invulnerable and only drop the shield once their guardians are defeated.
+   */
+  @type("boolean") invulnerable: boolean = false;
+  /** Marks a minion as one of a boss's guardians (gates the boss shield). */
+  @type("boolean") bossGuard: boolean = false;
+
+  /**
+   * Boss signature ability (a BossSignature kind id, e.g. "emberAoe"). Empty for
+   * non-bosses. Fires on its own cadence so it reads as a distinct boss moment.
+   */
+  @type("string") signature: string = "";
+  @type("float32") signatureTotalMs: number = 0;
+  @type("float32") signatureRemainingMs: number = 0;
+  /** Radius (cells) the signature reaches around the boss. */
+  @type("uint8") signatureRadius: number = 0;
 }

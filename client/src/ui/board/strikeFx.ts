@@ -7,7 +7,12 @@
  * bolt trails fire and bursts into embers; a tiger's pounce flicks green; a
  * lawnmower throws steel sparks. Enemies swing swords - their hits land as a
  * slashing arc, not a dot - so a goblin reads as a goblin.
+ *
+ * Coordinates are board-local: glyphs are appended into the camera-transformed
+ * fx layer so they pan (and scale) with the board instead of sticking to the
+ * screen.
  */
+import { fxParent } from "./fxRoot";
 
 const reduce =
   typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion:reduce)").matches;
@@ -46,7 +51,7 @@ const MAX_ACTIVE = 120;
 
 function add(el: HTMLElement): boolean {
   if (active >= MAX_ACTIVE) return false;
-  document.body.appendChild(el);
+  fxParent().appendChild(el);
   active++;
   return true;
 }

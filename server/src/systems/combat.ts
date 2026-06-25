@@ -7,9 +7,10 @@ import {
   EntityKind,
   GridPos,
   ServerEvent,
-  TargetShape,
-  TargetTeam,
+  abilityIsAoe,
+  footprintGap,
   getTierStats,
+  withinShape,
 } from "@tower/shared";
 import { BALANCE } from "../config/balance.js";
 import { CardState } from "../schema/CardState.js";
@@ -37,22 +38,36 @@ import {
   computeEffectiveMods,
   computeEnemyMods,
   reflectFromNeighbors,
+  shieldFromNeighbors,
   wallShieldFraction,
 } from "./synergy.js";
 
 /** Side-effect emitter so the room can broadcast transient events / VFX. */
 export type Emit = (event: ServerEvent, payload: unknown) => void;
 
+// Chests are NOT attackable: only a lockpick (Utility) opens them for loot, and
+// burning ground destroys them (treasure lost). Everything else here can be hit.
 const ENEMY_KINDS = new Set<string>([
   EntityKind.Minion,
   EntityKind.Boss,
   EntityKind.Obstacle,
-  EntityKind.Chest,
 ]);
 
 function isEnemyEntity(e: EntityState): boolean {
   return ENEMY_KINDS.has(e.kind) && e.health > 0;
 }
+
+/** Invulnerable entities (a guarded boss) ignore every source of damage. */
+function canDamage(e: EntityState): boolean {
+  return !e.invulnerable;
+}
+
+/** Boss signature tuning: root durations and the fraction of attack used for AoE. */
+const ENTANGLE_MS = 2500;
+const DEEP_FREEZE_MS = 2000;
+const EMBER_AOE_FRAC = 0.8;
+const QUAKE_FRAC = 0.6;
+const SUMMON_QUAKE_COUNT = 2;
 
 interface Rect {
   x: number;
@@ -63,55 +78,6 @@ interface Rect {
 
 function rectOf(o: { x: number; y: number; w: number; h: number }): Rect {
   return { x: o.x, y: o.y, w: o.w, h: o.h };
-}
-
-/**
- * Chebyshev gap (in cells) between two footprints, measured edge-to-edge so it
- * is independent of unit size. 0 = overlapping, 1 = touching (orthogonally or
- * diagonally adjacent), 2 = one empty cell between, etc. This is what makes
- * range work correctly for big multi-cell cards/enemies.
- */
-function footprintGap(a: Rect, b: Rect): number {
-  return Math.max(horizGap(a, b), vertGap(a, b));
-}
-function horizGap(a: Rect, b: Rect): number {
-  return Math.max(b.x - (a.x + a.w - 1), a.x - (b.x + b.w - 1), 0);
-}
-function vertGap(a: Rect, b: Rect): number {
-  return Math.max(b.y - (a.y + a.h - 1), a.y - (b.y + b.h - 1), 0);
-}
-function rowsOverlap(a: Rect, b: Rect): boolean {
-  return a.y <= b.y + b.h - 1 && b.y <= a.y + a.h - 1;
-}
-function colsOverlap(a: Rect, b: Rect): boolean {
-  return a.x <= b.x + b.w - 1 && b.x <= a.x + a.w - 1;
-}
-
-/** Whether `target` falls within `shape` (range cells) relative to `src`. */
-function withinShape(
-  src: Rect,
-  target: Rect,
-  shape: TargetShape,
-  range: number,
-): boolean {
-  const gap = footprintGap(src, target);
-  switch (shape) {
-    case TargetShape.SelfCell:
-      return gap === 0;
-    case TargetShape.Adjacent:
-      return gap > 0 && gap <= 1;
-    case TargetShape.Surrounding:
-      return gap > 0 && gap <= Math.max(1, range);
-    case TargetShape.Row:
-      return rowsOverlap(src, target) && horizGap(src, target) <= range;
-    case TargetShape.Column:
-      return colsOverlap(src, target) && vertGap(src, target) <= range;
-    case TargetShape.Global:
-      return true;
-    case TargetShape.Nearest:
-    default:
-      return gap <= range;
-  }
 }
 
 function boardCards(state: GameState): CardState[] {
@@ -157,9 +123,20 @@ function tickPlayerCards(state: GameState, dtMs: number, emit: Emit): void {
       }
     }
 
+    // Rooted by a boss signature: the card can't charge or fire until it thaws.
+    if (card.frozenMs > 0) {
+      card.frozenMs = Math.max(0, card.frozenMs - dtMs);
+      card.attacking = false;
+      continue;
+    }
+
     const def = CARD_CATALOG[card.defId];
     if (!def) continue;
     const stats = getTierStats(def, card.tier);
+
+    // Live shield capacity from neighboring walls (drives the on-card shield
+    // readout and is consumed first when the card is hit).
+    card.shield = card.maxHealth > 0 ? shieldFromNeighbors(state, card) : 0;
 
     const actionable = stats.abilities.filter((a) => FIREABLE_KINDS.has(a.kind));
     if (actionable.length === 0) {
@@ -328,12 +305,37 @@ function fireCardAbility(
 // Economy: a ring deployed on the board cashes itself in for the whole party.
 // -----------------------------------------------------------------------------
 function cashIn(state: GameState, card: CardState, ability: AbilityDef, emit: Emit): boolean {
+  // Bribe: a ring placed next to a greedy goblin buys it off — the party takes
+  // the goblin's gold and the satisfied goblin leaves the board without a fight.
+  const goblin = adjacentTradeMinion(state, card);
+  if (goblin) {
+    const gold = Math.max(1, goblin.rewardGold);
+    awardGoldToAll(state, gold);
+    emit(ServerEvent.GoldAwarded, { pos: { x: goblin.x, y: goblin.y }, w: goblin.w, h: goblin.h, gold });
+    emit(ServerEvent.Log, { message: `A goblin took the ring and left, paying ${gold}g!`, level: "info" });
+    // Remove directly so cleanupDead grants no kill reward / sword / streak.
+    state.entities.delete(goblin.entityId);
+    return true;
+  }
+
   const gold = Math.max(0, Math.round(ability.power));
   if (gold <= 0) return false;
   awardGoldToAll(state, gold);
   emit(ServerEvent.GoldAwarded, { pos: { x: card.x, y: card.y }, w: card.w, h: card.h, gold });
   emit(ServerEvent.Log, { message: `A ring was cashed in for ${gold}g for the party!`, level: "info" });
   return true;
+}
+
+/** A live, gold-bearing goblin (minion) touching this card — a bribe target. */
+function adjacentTradeMinion(state: GameState, card: CardState): EntityState | null {
+  const src = rectOf(card);
+  let found: EntityState | null = null;
+  state.entities.forEach((e) => {
+    if (found) return;
+    if (e.kind !== EntityKind.Minion || e.health <= 0 || e.rewardGold <= 0) return;
+    if (footprintGap(src, rectOf(e)) <= 1) found = e;
+  });
+  return found;
 }
 
 // -----------------------------------------------------------------------------
@@ -523,17 +525,32 @@ function findEnemyTargets(
 ): EntityState[] {
   const enemies: EntityState[] = [];
   state.entities.forEach((e) => {
-    if (isEnemyEntity(e)) enemies.push(e);
+    // A guarded (invulnerable) boss is no target — attacks fall to its guardians.
+    if (isEnemyEntity(e) && canDamage(e)) enemies.push(e);
   });
   if (enemies.length === 0) return [];
 
   const src = rectOf(card);
   const range = ability.range ?? 1;
 
-  // Multi-target: hit every enemy within reach (touching units all get struck),
-  // not just the single nearest. Shape still constrains the pattern
-  // (row/column/surrounding); Nearest/default means "all within range".
-  return enemies.filter((e) => withinShape(src, rectOf(e), ability.shape, range));
+  const inReach = enemies.filter((e) => withinShape(src, rectOf(e), ability.shape, range));
+  if (inReach.length === 0) return [];
+
+  // AoE abilities (area shapes, or point shapes flagged `aoe`) strike everything
+  // in reach. Single-target abilities hit only the nearest foe (closest gap,
+  // tie-broken by lowest remaining health so they help finish a kill).
+  if (abilityIsAoe(ability)) return inReach;
+
+  let best = inReach[0];
+  let bestGap = footprintGap(src, rectOf(best));
+  for (const e of inReach) {
+    const gap = footprintGap(src, rectOf(e));
+    if (gap < bestGap || (gap === bestGap && e.health < best.health)) {
+      best = e;
+      bestGap = gap;
+    }
+  }
+  return [best];
 }
 
 // -----------------------------------------------------------------------------
@@ -548,6 +565,16 @@ function tickEnemies(state: GameState, dtMs: number, emit: Emit): void {
     if (e.kind !== EntityKind.Minion && e.kind !== EntityKind.Boss) return;
     if (e.health <= 0) return;
     if (e.hidden) return;
+
+    // Bosses also wield a signature ability on their own cadence — it threatens
+    // the field even while the boss is still shielded by its guardians.
+    if (e.kind === EntityKind.Boss && e.signature) {
+      e.signatureRemainingMs -= dtMs;
+      if (e.signatureRemainingMs <= 0) {
+        e.signatureRemainingMs = e.signatureTotalMs;
+        fireBossSignature(state, e, emit);
+      }
+    }
 
     // Nearby player debuffs (fear totems, etc.) slow and weaken this enemy.
     const mods = computeEnemyMods(state, e);
@@ -586,6 +613,133 @@ function tickEnemies(state: GameState, dtMs: number, emit: Emit): void {
   });
 }
 
+// -----------------------------------------------------------------------------
+// Boss signature abilities
+// -----------------------------------------------------------------------------
+/** Dispatch a boss's signature by its kind id (see config/bosses.ts). */
+function fireBossSignature(state: GameState, boss: EntityState, emit: Emit): void {
+  const radius = boss.signatureRadius || 2;
+  const targets = playerCardsInRange(state, boss, radius);
+
+  switch (boss.signature) {
+    case "entangle": {
+      // Root the single biggest threat in range (highest max health).
+      if (targets.length === 0) return;
+      let victim = targets[0];
+      for (const c of targets) if (c.maxHealth > victim.maxHealth) victim = c;
+      victim.frozenMs = ENTANGLE_MS;
+      emit(ServerEvent.AbilityFired, {
+        sourceCellKey: `${boss.x},${boss.y}`,
+        ability: "attack",
+        team: "enemy",
+        family: boss.family,
+        targets: [{ x: victim.x, y: victim.y }],
+      });
+      emit(ServerEvent.Log, { message: "The boss entangles a card in thorns!", level: "warn" });
+      return;
+    }
+    case "deepFreeze": {
+      // Flash-freeze everything nearby at once.
+      if (targets.length === 0) return;
+      const cells: GridPos[] = [];
+      for (const c of targets) {
+        c.frozenMs = DEEP_FREEZE_MS;
+        cells.push({ x: c.x, y: c.y });
+      }
+      emit(ServerEvent.AbilityFired, {
+        sourceCellKey: `${boss.x},${boss.y}`,
+        ability: "attack",
+        team: "enemy",
+        family: boss.family,
+        targets: cells,
+      });
+      emit(ServerEvent.Log, { message: "A deep freeze locks your cards in ice!", level: "warn" });
+      return;
+    }
+    case "emberAoe": {
+      if (targets.length === 0) return;
+      const dmg = Math.max(1, Math.round(boss.attackPower * EMBER_AOE_FRAC));
+      const cells: GridPos[] = [];
+      for (const c of targets) {
+        applyDamageToCard(state, c, dmg, boss, emit);
+        cells.push({ x: c.x, y: c.y });
+      }
+      emit(ServerEvent.AbilityFired, {
+        sourceCellKey: `${boss.x},${boss.y}`,
+        ability: "attack",
+        team: "enemy",
+        family: boss.family,
+        targets: cells,
+      });
+      emit(ServerEvent.Log, { message: "Embers rain across the field!", level: "warn" });
+      return;
+    }
+    case "summonQuake": {
+      // Quake everything nearby, then call in reinforcements.
+      const cells: GridPos[] = [];
+      const dmg = Math.max(1, Math.round(boss.attackPower * QUAKE_FRAC));
+      for (const c of targets) {
+        applyDamageToCard(state, c, dmg, boss, emit);
+        cells.push({ x: c.x, y: c.y });
+      }
+      const summoned = summonMinionsNearBoss(state, boss, SUMMON_QUAKE_COUNT);
+      emit(ServerEvent.AbilityFired, {
+        sourceCellKey: `${boss.x},${boss.y}`,
+        ability: "attack",
+        team: "enemy",
+        family: boss.family,
+        targets: cells,
+      });
+      emit(ServerEvent.Log, {
+        message: `The Sovereign quakes the floor and summons ${summoned} minions!`,
+        level: "warn",
+      });
+      return;
+    }
+  }
+}
+
+/** Spawn up to `count` fresh minions on free cells ringing the boss. */
+function summonMinionsNearBoss(state: GameState, boss: EntityState, count: number): number {
+  const occ = occupiedCells(state);
+  let summoned = 0;
+  for (let r = 1; r <= 3 && summoned < count; r++) {
+    for (let oy = -r; oy <= boss.h - 1 + r && summoned < count; oy++) {
+      for (let ox = -r; ox <= boss.w - 1 + r && summoned < count; ox++) {
+        const x = boss.x + ox;
+        const y = boss.y + oy;
+        if (!inBounds(state, x, y, 2, 2)) continue;
+        if (!cellsFree(x, y, 2, 2, occ)) continue;
+        const floor = state.floor;
+        const m = new EntityState();
+        m.entityId = newInstanceId("summon");
+        m.kind = EntityKind.Minion;
+        m.family = boss.family;
+        m.art = "goblin";
+        m.w = 2;
+        m.h = 2;
+        m.x = x;
+        m.y = y;
+        m.maxHealth = Math.round(BALANCE.minion.baseHealth + floor * BALANCE.minion.healthPerFloor);
+        m.health = m.maxHealth;
+        m.attackPower = Math.max(
+          1,
+          Math.round(BALANCE.minion.baseAttack + floor * BALANCE.minion.attackPerFloor),
+        );
+        m.cooldownTotalMs = BALANCE.minion.cooldownMs;
+        m.cooldownRemainingMs = BALANCE.minion.cooldownMs;
+        m.baseCooldownMs = BALANCE.minion.cooldownMs;
+        m.blocking = true;
+        m.rewardGold = BALANCE.minion.baseRewardGold;
+        for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) occ.add(`${x + dx},${y + dy}`);
+        state.entities.set(m.entityId, m);
+        summoned++;
+      }
+    }
+  }
+  return summoned;
+}
+
 function playerCardsInRange(state: GameState, e: EntityState, range: number): CardState[] {
   const src = rectOf(e);
   const out: CardState[] = [];
@@ -601,11 +755,14 @@ function playerCardsInRange(state: GameState, e: EntityState, range: number): Ca
 // -----------------------------------------------------------------------------
 function tickTerrain(state: GameState, dtMs: number, emit: Emit): void {
   const enemies: EntityState[] = [];
+  const chests: EntityState[] = [];
   state.entities.forEach((e) => {
     if (isEnemyEntity(e)) enemies.push(e);
+    else if (e.kind === EntityKind.Chest && e.health > 0) chests.push(e);
   });
 
   const expired: string[] = [];
+  const burnedChests = new Set<string>();
   state.entities.forEach((e) => {
     if (e.kind !== EntityKind.Terrain) return;
     e.lifetimeMs -= dtMs;
@@ -619,13 +776,27 @@ function tickTerrain(state: GameState, dtMs: number, emit: Emit): void {
     e.cooldownRemainingMs = e.cooldownTotalMs;
     const src = rectOf(e);
     for (const en of enemies) {
+      if (!canDamage(en)) continue; // a guarded boss is immune to burning ground too
       if (footprintGap(src, rectOf(en)) <= 1) {
         en.health -= e.attackPower;
         en.takingDamage = true;
         emit(ServerEvent.Damage, { pos: { x: en.x, y: en.y }, amount: e.attackPower });
       }
     }
+    // Burning ground consumes any chest it touches: the treasure is lost.
+    for (const ch of chests) {
+      if (!burnedChests.has(ch.entityId) && footprintGap(src, rectOf(ch)) <= 1) {
+        burnedChests.add(ch.entityId);
+      }
+    }
   });
+  // Destroy burned chests directly so cleanupDead never awards their loot.
+  for (const id of burnedChests) {
+    const ch = state.entities.get(id);
+    if (!ch) continue;
+    state.entities.delete(id);
+    emit(ServerEvent.Log, { message: "A chest burned to ash — its treasure was lost.", level: "warn" });
+  }
   for (const id of expired) state.entities.delete(id);
 }
 
@@ -641,6 +812,8 @@ function damageEntity(
   crit = false,
 ): void {
   if (e.hidden) e.hidden = false; // hitting a hidden thing reveals it
+  // A guarded boss shrugs off the blow entirely (no chip damage leaks through).
+  if (!canDamage(e)) return;
   e.health -= amount;
   e.takingDamage = true;
   emit(ServerEvent.Damage, { pos: { x: e.x, y: e.y }, amount, crit });
@@ -655,8 +828,9 @@ function applyDamageToCard(
 ): void {
   let amount = rawAmount;
 
-  // 1) Mirrors reflect a fraction back at the attacker.
-  const reflectFrac = reflectFromNeighbors(state, card);
+  // 1) Mirrors reflect a fraction back at the attacker (unless it's a guarded,
+  // invulnerable boss — its shield bounces the reflection too).
+  const reflectFrac = canDamage(attacker) ? reflectFromNeighbors(state, card) : 0;
   if (reflectFrac > 0) {
     const reflected = Math.round(amount * reflectFrac);
     if (reflected > 0) {
@@ -671,16 +845,17 @@ function applyDamageToCard(
     }
   }
 
-  // 2) Walls absorb a fraction of remaining damage (until destroyed). The
-  // fraction scales with the wall's tier (Wood 50% -> Iron 80%), so a sturdier
-  // barrier genuinely protects more.
+  // 2) Walls take the hit *for* the card by soaking up to a fraction of the
+  // blow, redirecting that onto their own health. The fraction scales with the
+  // wall's tier (Wood 50% -> Iron 80%). Whatever the walls can't physically
+  // soak (they ran out of health) passes through to the card — no damage is
+  // ever silently lost.
   if (amount > 0) {
     const frac = wallShieldFraction(state, card);
     if (frac > 0) {
-      const absorbed = Math.min(amount, Math.round(amount * frac));
-      amount -= absorbed;
-      // The absorbed damage is dealt to the protecting wall(s) instead.
-      distributeToWalls(state, card, absorbed, emit);
+      const want = Math.round(amount * frac);
+      const soaked = distributeToWalls(state, card, want, emit);
+      amount -= soaked;
     }
   }
 
@@ -690,17 +865,18 @@ function applyDamageToCard(
   emit(ServerEvent.Damage, { pos: { x: card.x, y: card.y }, amount });
 }
 
+/** Chip neighboring ally walls to soak up to `amount`; returns the amount soaked. */
 function distributeToWalls(
   state: GameState,
   card: CardState,
   amount: number,
   emit: Emit,
-): void {
-  // Find neighboring ally walls and chip their health.
+): number {
   let remaining = amount;
   state.cards.forEach((n) => {
     if (remaining <= 0) return;
     if (n.location !== "board" || n.ownerId !== card.ownerId) return;
+    if (n.health <= 0) return;
     const nDef = CARD_CATALOG[n.defId];
     if (!nDef) return;
     const isWall = getTierStats(nDef, n.tier).abilities.some(
@@ -714,6 +890,7 @@ function distributeToWalls(
     remaining -= chip;
     emit(ServerEvent.Damage, { pos: { x: n.x, y: n.y }, amount: chip });
   });
+  return amount - remaining;
 }
 
 // -----------------------------------------------------------------------------
@@ -757,8 +934,9 @@ function cleanupDead(state: GameState, emit: Emit): void {
     }
 
     // A slain goblin drops a wooden sword into every player's hand - a small,
-    // 1x1 weapon they keep and can place next shopping phase.
-    if (e.kind === EntityKind.Minion) {
+    // 1x1 weapon they keep and can place next shopping phase. Boss guardians
+    // don't drop loot (they're an obstacle to clear, not a goblin payday).
+    if (e.kind === EntityKind.Minion && !e.bossGuard) {
       grantToAll(state, "wooden_sword");
       emit(ServerEvent.Log, { message: "A goblin dropped a wooden sword!", level: "info" });
     }
@@ -784,6 +962,31 @@ function cleanupDead(state: GameState, emit: Emit): void {
     }
 
     state.entities.delete(id);
+  }
+
+  // Guardians down? Drop the boss's shield so it can finally be hurt.
+  let boss: EntityState | null = null;
+  let liveGuards = 0;
+  state.entities.forEach((e) => {
+    if (e.kind === EntityKind.Boss && e.health > 0) boss = e;
+    if (e.bossGuard && e.health > 0) liveGuards++;
+  });
+  if (boss && (boss as EntityState).invulnerable && liveGuards === 0) {
+    (boss as EntityState).invulnerable = false;
+    emit(ServerEvent.BossVulnerable, {
+      pos: { x: (boss as EntityState).x, y: (boss as EntityState).y },
+    });
+    emit(ServerEvent.Log, {
+      message: "The guardians have fallen — the boss is exposed!",
+      level: "warn",
+    });
+  }
+
+  // Non-boss floors have no boss to slay: the key is earned by clearing the
+  // floor of every foe. (Boss floors still gate on the boss death above.)
+  if (!state.keyAcquired && enemiesRemaining(state) === 0) {
+    state.keyAcquired = true;
+    emit(ServerEvent.FloorCleared, { floor: state.floor });
   }
 }
 

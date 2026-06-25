@@ -21,6 +21,8 @@ export function HandCard({ instanceId, defId, tier, unit }: HandCardProps) {
   const onPointerDown = (e: React.PointerEvent) => {
     dragController.begin(e, {
       instanceId,
+      defId,
+      tier,
       w,
       h,
       location: "hand",

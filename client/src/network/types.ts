@@ -23,6 +23,8 @@ export interface CardSnapshot {
   attacking: boolean;
   takingDamage: boolean;
   shield: number;
+  /** Rooted/frozen timer (ms) from a boss signature; >0 = cannot act. */
+  frozenMs: number;
 }
 
 export interface EntitySnapshot {
@@ -45,6 +47,10 @@ export interface EntitySnapshot {
   rewardGold: number;
   attacking: boolean;
   takingDamage: boolean;
+  /** A guarded boss ignores damage until its guardians fall. */
+  invulnerable: boolean;
+  /** Marks a minion as one of a boss's guardians. */
+  bossGuard: boolean;
 }
 
 export interface PlayerSnapshot {
@@ -73,12 +79,14 @@ export interface GameSnapshot {
   floor: number;
   maxFloor: number;
   weather: string;
+  biome: string;
   boardWidth: number;
   boardHeight: number;
   timeRemainingMs: number;
   keyAcquired: boolean;
   killStreak: number;
   shopLocked: boolean;
+  rerollCount: number;
   cards: Record<string, CardSnapshot>;
   entities: Record<string, EntitySnapshot>;
   players: Record<string, PlayerSnapshot>;

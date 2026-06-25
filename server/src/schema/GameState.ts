@@ -18,6 +18,9 @@ export class GameState extends Schema {
   /** Weather value from shared types. */
   @type("string") weather: string = "clear";
 
+  /** Biome/theme id for the current band (drives client palette + flavor). */
+  @type("string") biome: string = "verdant";
+
   /** Board dimensions in cells. */
   @type("uint16") boardWidth: number = 16;
   @type("uint16") boardHeight: number = 12;
@@ -35,6 +38,9 @@ export class GameState extends Schema {
 
   /** When locked, the shop keeps its offers across the next floor refresh. */
   @type("boolean") shopLocked: boolean = false;
+
+  /** Rerolls purchased for the current floor's shop; each one costs +1 more. */
+  @type("uint16") rerollCount: number = 0;
 
   /** All card instances (hand + board) keyed by instanceId. */
   @type({ map: CardState }) cards = new MapSchema<CardState>();

@@ -1,6 +1,8 @@
 import { CARD_CATALOG, CARD_TYPE_LABEL, CardType, GamePhase, getTierStats } from "@tower/shared";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useGameStore } from "../../network/store";
+import { ChargeBar } from "./ChargeBar";
+import { setFxRoot } from "./fxRoot";
 import {
   CARD_TYPE_COLOR,
   CARD_TYPE_GRADIENT,
@@ -14,7 +16,7 @@ import { flyCoins, onGoldAwarded } from "./coinFx";
 import { onAbilityFired, playStrike } from "./strikeFx";
 import { floatDamage, onDamage, shakeScreen } from "./dmgFx";
 import { firePulse, landDust, squashLand, windGust } from "./placeFx";
-import { CELL, STRIDE, cardPx } from "./constants";
+import { CELL, DISCOVERY_PAD, STRIDE, cardPx } from "./constants";
 import { dragController } from "./dragController";
 
 /** Cards whose identity is an ambient aura, given a persistent on-board effect. */
@@ -48,11 +50,17 @@ const ENTITY_LABEL: Record<string, string> = {
 };
 
 /**
- * Biome palette for the ground. Patches of these tones give the board a sense of
- * place (grass, moss, soil, stone) instead of a uniform void, so even an empty
- * grid reads as a designed level. Atlas: color theory for biomes + grid-hiding.
+ * Per-biome ground palettes. Patches of these tones give each band a distinct
+ * sense of place (verdant greens, foundry embers, frost blues, summit dark)
+ * instead of a uniform void, so even an empty grid reads as a designed level.
  */
-const TERRAIN = ["#1b2c1d", "#203420", "#172a1a", "#26301c", "#142824", "#2a2a1b", "#1d2a30"];
+const BIOME_TERRAIN: Record<string, string[]> = {
+  verdant: ["#1b2c1d", "#203420", "#172a1a", "#26301c", "#142824", "#2a2a1b", "#1d2a30"],
+  ashen: ["#2a1712", "#331a13", "#241410", "#3a1f15", "#2e1a14", "#3d2417", "#291511"],
+  frost: ["#16242e", "#1b2d38", "#142733", "#1f3340", "#13202b", "#22323d", "#182a36"],
+  summit: ["#1a1622", "#211a2c", "#161320", "#261d31", "#1d1726", "#2a2036", "#15121d"],
+};
+const DEFAULT_TERRAIN = BIOME_TERRAIN.verdant;
 const PROP_GLYPH = ["•", "·", "✦", "❟", "ᵕ"];
 
 function hash2(x: number, y: number): number {
@@ -62,9 +70,10 @@ function hash2(x: number, y: number): number {
 }
 
 /** Coarse biome patch (3x3 cells) so terrain reads as zones, not noise. */
-function terrainColor(x: number, y: number): string {
+function terrainColor(x: number, y: number, biome: string): string {
+  const palette = BIOME_TERRAIN[biome] ?? DEFAULT_TERRAIN;
   const patch = hash2(Math.floor(x / 3), Math.floor(y / 3));
-  return TERRAIN[patch % TERRAIN.length];
+  return palette[patch % palette.length];
 }
 
 /** Subtle, non-gameplay clutter on a fraction of cells to break grid lines. */
@@ -73,6 +82,79 @@ function cellProp(x: number, y: number): string | null {
   if (h % 6 !== 0) return null;
   return PROP_GLYPH[h % PROP_GLYPH.length];
 }
+
+/**
+ * The static terrain grid. This is by far the heaviest part of the board (up to
+ * thousands of cells) yet only changes when the board grows or the inspected
+ * cell moves — never on the ~20×/s combat patches. Memoizing it on those few
+ * primitives keeps React from diffing the whole grid every frame of a fight.
+ */
+const BoardSlots = memo(function BoardSlots({
+  boardW,
+  boardH,
+  selX,
+  selY,
+  biome,
+}: {
+  boardW: number;
+  boardH: number;
+  selX: number;
+  selY: number;
+  biome: string;
+}) {
+  const slots = useMemo(() => {
+    const cells: { x: number; y: number }[] = [];
+    for (let y = 0; y < boardH; y++) {
+      for (let x = 0; x < boardW; x++) cells.push({ x, y });
+    }
+    return cells;
+  }, [boardW, boardH]);
+
+  return (
+    <>
+      {slots.map((c) => {
+        const isSel = c.x === selX && c.y === selY;
+        const prop = cellProp(c.x, c.y);
+        return (
+          <div
+            key={`s${c.x}-${c.y}`}
+            className={`board-slot${isSel ? " sel" : ""}`}
+            style={{
+              left: c.x * STRIDE,
+              top: c.y * STRIDE,
+              width: CELL,
+              height: CELL,
+              background: terrainColor(c.x, c.y, biome),
+            }}
+          >
+            {prop && <span className="bs-prop">{prop}</span>}
+          </div>
+        );
+      })}
+    </>
+  );
+});
+
+/**
+ * Highlights the cells the currently-dragged card would attack/affect. Subscribes
+ * to the store directly so frequent drag-move updates only re-render this thin
+ * overlay, not the whole board.
+ */
+const AttackPreviewLayer = memo(function AttackPreviewLayer() {
+  const cells = useGameStore((s) => s.attackPreview);
+  if (cells.length === 0) return null;
+  return (
+    <>
+      {cells.map((c) => (
+        <div
+          key={`ap${c.x}-${c.y}`}
+          className="attack-cell"
+          style={{ left: c.x * STRIDE, top: c.y * STRIDE, width: CELL, height: CELL }}
+        />
+      ))}
+    </>
+  );
+});
 
 /**
  * The full-screen DOM board: a CSS-transform camera (pan/pinch/zoom) over a
@@ -90,6 +172,7 @@ export function Board({
   const snapshot = useGameStore((s) => s.snapshot);
   const sessionId = useGameStore((s) => s.sessionId);
   const selectedCell = useGameStore((s) => s.selectedCell);
+  const reportViewport = useGameStore((s) => s.reportViewport);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const boardwrapRef = useRef<HTMLDivElement>(null);
@@ -135,10 +218,13 @@ export function Board({
       onSell: (id) => useGameStore.getState().sellCard(id),
       onPickup: (id) => useGameStore.getState().pickUpCard(id),
       onTap: (id) => onInspectCard(id),
+      onPreviewCells: (cells) => useGameStore.getState().setAttackPreview(cells),
     });
   }, [onInspectCard]);
 
-  // Camera gestures: 1 pointer pan, 2 pointer pinch, wheel zoom-at-cursor.
+  // Pan the board (single-pointer drag) to reach rows/cols that overflow the
+  // pane; a press without movement is a tap that inspects the cell. The board
+  // fills the pane and there is no zoom.
   useEffect(() => {
     const viewport = viewportRef.current;
     const boardwrap = boardwrapRef.current;
@@ -146,20 +232,8 @@ export function Board({
     const cam = cameraRef.current;
     const apply = () => cam.apply(boardwrap);
 
-    const ptrs = new Map<number, { x: number; y: number }>();
-    let gest: { mode: "pan" | "pinch"; ox?: number; oy?: number; cx?: number; cy?: number } | null =
-      null;
-    let pinch0: { dist: number; z: number; mx: number; my: number } | null = null;
-    let downAt: { x: number; y: number } | null = null;
+    let pan: { ox: number; oy: number; cx: number; cy: number; id: number } | null = null;
     let moved = false;
-
-    const vr = () => viewport.getBoundingClientRect();
-    const pinchInfo = () => {
-      const a = [...ptrs.values()];
-      const dx = a[1].x - a[0].x;
-      const dy = a[1].y - a[0].y;
-      return { dist: Math.hypot(dx, dy) || 1, mx: (a[0].x + a[1].x) / 2, my: (a[0].y + a[1].y) / 2 };
-    };
 
     const onDown = (e: PointerEvent) => {
       if (dragController.isDragging) return;
@@ -169,95 +243,52 @@ export function Board({
       } catch {
         /* ignore */
       }
-      ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      downAt = { x: e.clientX, y: e.clientY };
+      pan = { ox: e.clientX, oy: e.clientY, cx: cam.x, cy: cam.y, id: e.pointerId };
       moved = false;
-      if (ptrs.size === 1) {
-        gest = { mode: "pan", ox: e.clientX, oy: e.clientY, cx: cam.x, cy: cam.y };
-        viewport.classList.add("grabbing");
-      } else if (ptrs.size === 2) {
-        const d = pinchInfo();
-        pinch0 = { dist: d.dist, z: cam.z, mx: d.mx, my: d.my };
-        gest = { mode: "pinch" };
-      }
+      viewport.classList.add("grabbing");
     };
 
     const onMove = (e: PointerEvent) => {
-      if (!ptrs.has(e.pointerId)) return;
-      ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 5) moved = true;
-      if (gest?.mode === "pan" && ptrs.size === 1) {
-        cam.x = (gest.cx ?? 0) + (e.clientX - (gest.ox ?? 0));
-        cam.y = (gest.cy ?? 0) + (e.clientY - (gest.oy ?? 0));
-        cam.clamp(viewport.clientWidth, viewport.clientHeight, cardPx(boardW), cardPx(boardH));
-        apply();
-      } else if (gest?.mode === "pinch" && ptrs.size >= 2 && pinch0) {
-        const d = pinchInfo();
-        const nz = cam.clampZ(pinch0.z * (d.dist / pinch0.dist));
-        const r = vr();
-        const blx = (pinch0.mx - r.left - cam.x) / cam.z;
-        const bly = (pinch0.my - r.top - cam.y) / cam.z;
-        cam.z = nz;
-        cam.x = d.mx - r.left - blx * nz;
-        cam.y = d.my - r.top - bly * nz;
-        cam.clamp(viewport.clientWidth, viewport.clientHeight, cardPx(boardW), cardPx(boardH));
-        apply();
-      }
+      if (!pan || e.pointerId !== pan.id) return;
+      if (Math.hypot(e.clientX - pan.ox, e.clientY - pan.oy) > 5) moved = true;
+      cam.x = pan.cx + (e.clientX - pan.ox);
+      cam.y = pan.cy + (e.clientY - pan.oy);
+      cam.clamp(viewport.clientWidth, viewport.clientHeight, cardPx(boardW), cardPx(boardH));
+      apply();
     };
 
     const onUp = (e: PointerEvent) => {
-      const wasSingle = ptrs.size === 1;
-      if (ptrs.has(e.pointerId)) {
-        ptrs.delete(e.pointerId);
-        try {
-          viewport.releasePointerCapture(e.pointerId);
-        } catch {
-          /* ignore */
-        }
+      if (!pan || e.pointerId !== pan.id) return;
+      const wasTap = !moved && !dragController.isDragging;
+      try {
+        viewport.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
       }
-      // Tap (no pan) -> inspect the cell under the pointer.
-      if (wasSingle && !moved && !dragController.isDragging) {
-        const snap = useGameStore.getState().snapshot;
-        if (snap) {
-          const r = vr();
-          const b = cam.screenToBoard(e.clientX, e.clientY, r.left, r.top);
-          const cx = Math.floor(b.x / STRIDE);
-          const cy = Math.floor(b.y / STRIDE);
-          if (cx >= 0 && cy >= 0 && cx < snap.boardWidth && cy < snap.boardHeight) {
-            useGameStore.getState().selectCell({ x: cx, y: cy });
-            onInspectRef.current();
-          }
-        }
+      pan = null;
+      viewport.classList.remove("grabbing");
+      if (!wasTap) return;
+      const snap = useGameStore.getState().snapshot;
+      if (!snap) return;
+      const r = viewport.getBoundingClientRect();
+      const b = cam.screenToBoard(e.clientX, e.clientY, r.left, r.top);
+      const cx = Math.floor(b.x / STRIDE);
+      const cy = Math.floor(b.y / STRIDE);
+      if (cx >= 0 && cy >= 0 && cx < snap.boardWidth && cy < snap.boardHeight) {
+        useGameStore.getState().selectCell({ x: cx, y: cy });
+        onInspectRef.current();
       }
-      if (ptrs.size === 1) {
-        const p = [...ptrs.values()][0];
-        gest = { mode: "pan", ox: p.x, oy: p.y, cx: cam.x, cy: cam.y };
-      } else if (ptrs.size === 0) {
-        gest = null;
-        pinch0 = null;
-        viewport.classList.remove("grabbing");
-      }
-    };
-
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const r = vr();
-      cam.zoomAt(e.clientX, e.clientY, cam.z * (e.deltaY < 0 ? 1.12 : 1 / 1.12), r.left, r.top);
-      cam.clamp(viewport.clientWidth, viewport.clientHeight, cardPx(boardW), cardPx(boardH));
-      apply();
     };
 
     viewport.addEventListener("pointerdown", onDown);
     viewport.addEventListener("pointermove", onMove);
     viewport.addEventListener("pointerup", onUp);
     viewport.addEventListener("pointercancel", onUp);
-    viewport.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       viewport.removeEventListener("pointerdown", onDown);
       viewport.removeEventListener("pointermove", onMove);
       viewport.removeEventListener("pointerup", onUp);
       viewport.removeEventListener("pointercancel", onUp);
-      viewport.removeEventListener("wheel", onWheel);
     };
   }, [boardW, boardH]);
 
@@ -272,8 +303,8 @@ export function Board({
       // Board-space center of the entity, then through the camera to the screen.
       const bx = pos.x * STRIDE + cardPx(w) / 2;
       const by = pos.y * STRIDE + cardPx(h) / 2;
-      const sx = vr.left + cam.x + bx * cam.z;
-      const sy = vr.top + cam.y + by * cam.z;
+      const sx = vr.left + cam.x + bx * cam.zx;
+      const sy = vr.top + cam.y + by * cam.zy;
       flyCoins({ x: sx, y: sy }, target, gold);
     });
   }, []);
@@ -284,11 +315,11 @@ export function Board({
     return onAbilityFired(({ sourceCellKey, team, targets, ability, family }) => {
       const viewport = viewportRef.current;
       if (!viewport) return;
-      const cam = cameraRef.current;
-      const vr = viewport.getBoundingClientRect();
+      // Board-local coords: the fx layer is inside the camera transform, so it
+      // pans/scales with the board automatically.
       const toScreen = (cx: number, cy: number) => ({
-        x: vr.left + cam.x + (cx * STRIDE + CELL / 2) * cam.z,
-        y: vr.top + cam.y + (cy * STRIDE + CELL / 2) * cam.z,
+        x: cx * STRIDE + CELL / 2,
+        y: cy * STRIDE + CELL / 2,
       });
       const [sxRaw, syRaw] = sourceCellKey.split(",").map(Number);
 
@@ -320,10 +351,9 @@ export function Board({
     return onDamage(({ pos, amount, crit, reflected }) => {
       const viewport = viewportRef.current;
       if (!viewport) return;
-      const cam = cameraRef.current;
-      const vr = viewport.getBoundingClientRect();
-      const sx = vr.left + cam.x + (pos.x * STRIDE + CELL / 2) * cam.z;
-      const sy = vr.top + cam.y + (pos.y * STRIDE + CELL / 2) * cam.z;
+      // Board-local coords (fx layer rides the camera transform).
+      const sx = pos.x * STRIDE + CELL / 2;
+      const sy = pos.y * STRIDE + CELL / 2;
       floatDamage(sx, sy, amount, { crit, reflected });
       if (crit || amount >= 30) shakeScreen(viewport, crit ? 9 : 6);
     });
@@ -344,48 +374,70 @@ export function Board({
     }
     const prev = placedRef.current;
     const viewport = viewportRef.current;
-    const cam = cameraRef.current;
     if (viewport) {
-      const vr = viewport.getBoundingClientRect();
+      // Board-local coords; the camera-transformed fx layer scales them to
+      // screen, so dust/gusts pan with the board. scale=1 lets the camera scale.
       for (const c of onBoard) {
         if (prev.has(c.instanceId)) continue;
-        const cx = vr.left + cam.x + (c.x * STRIDE + cardPx(c.w) / 2) * cam.z;
-        const baseY = vr.top + cam.y + (c.y * STRIDE + cardPx(c.h)) * cam.z;
-        landDust(cx, baseY, cam.z);
+        const cx = c.x * STRIDE + cardPx(c.w) / 2;
+        const baseY = c.y * STRIDE + cardPx(c.h);
+        landDust(cx, baseY, 1);
         squashLand(
           boardwrapRef.current?.querySelector<HTMLElement>(`[data-card-id="${c.instanceId}"]`) ??
             null,
         );
         if (c.defId === "wind") {
-          const cyScreen = vr.top + cam.y + (c.y * STRIDE + cardPx(c.h) / 2) * cam.z;
-          windGust(cx, cyScreen, cam.z);
+          const cyScreen = c.y * STRIDE + cardPx(c.h) / 2;
+          windGust(cx, cyScreen, 1);
         }
       }
     }
     placedRef.current = current;
   }, [snapshot]);
 
-  // Fit the camera whenever the board size changes (new floor, first load).
+  // Fit the camera when the board or its pane size changes.
   useEffect(() => {
     const viewport = viewportRef.current;
     const boardwrap = boardwrapRef.current;
     if (!viewport || !boardwrap) return;
     const cam = cameraRef.current;
-    cam.fit(viewport.clientWidth, viewport.clientHeight, cardPx(boardW), cardPx(boardH));
-    cam.apply(boardwrap);
-  }, [boardW, boardH]);
+    const fit = () => {
+      const vw = viewport.clientWidth;
+      const vh = viewport.clientHeight;
+      cam.fit(vw, vh, cardPx(boardW), cardPx(boardH));
+      cam.apply(boardwrap);
+      // Ask the server for enough columns/rows to fill this viewport (plus a
+      // discovery pad to pan into). The board grows to the largest client.
+      const strideOnScreen = STRIDE * cam.zx;
+      const cols = Math.ceil(vw / strideOnScreen) + DISCOVERY_PAD;
+      const rows = Math.ceil(vh / strideOnScreen) + DISCOVERY_PAD;
+      reportViewport(cols, rows);
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(viewport);
+    return () => ro.disconnect();
+  }, [boardW, boardH, reportViewport]);
 
-  const slots = useMemo(() => {
-    const cells: { x: number; y: number }[] = [];
-    for (let y = 0; y < boardH; y++) {
-      for (let x = 0; x < boardW; x++) cells.push({ x, y });
-    }
-    return cells;
-  }, [boardW, boardH]);
+  // Register the camera-transformed fx layer so VFX modules append into it.
+  const fxRootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    setFxRoot(fxRootRef.current);
+    return () => setFxRoot(null);
+  }, []);
 
-  const startCardDrag = (e: React.PointerEvent, instanceId: string, w: number, h: number) => {
+  const startCardDrag = (
+    e: React.PointerEvent,
+    instanceId: string,
+    defId: string,
+    tier: number,
+    w: number,
+    h: number,
+  ) => {
     dragController.begin(e, {
       instanceId,
+      defId,
+      tier,
       w,
       h,
       location: "board",
@@ -401,38 +453,24 @@ export function Board({
           className="board-surface"
           style={{ width: cardPx(boardW), height: cardPx(boardH) }}
         >
-          {slots.map((c) => {
-            const isSel = selectedCell && selectedCell.x === c.x && selectedCell.y === c.y;
-            const prop = cellProp(c.x, c.y);
-            return (
-              <div
-                key={`s${c.x}-${c.y}`}
-                className={`board-slot${isSel ? " sel" : ""}`}
-                style={{
-                  left: c.x * STRIDE,
-                  top: c.y * STRIDE,
-                  width: CELL,
-                  height: CELL,
-                  background: terrainColor(c.x, c.y),
-                }}
-              >
-                {prop && <span className="bs-prop">{prop}</span>}
-              </div>
-            );
-          })}
+          <BoardSlots
+            boardW={boardW}
+            boardH={boardH}
+            selX={selectedCell?.x ?? -1}
+            selY={selectedCell?.y ?? -1}
+            biome={snapshot?.biome ?? "verdant"}
+          />
+
+          <AttackPreviewLayer />
 
           {snapshot &&
             Object.values(snapshot.entities).map((e) => {
               const artUrl = e.hidden ? null : entityArtUrl(e.art, e.kind);
-              const charge =
-                e.attacking && e.cooldownTotalMs > 0
-                  ? Math.max(0, Math.min(1, 1 - e.cooldownRemainingMs / e.cooldownTotalMs))
-                  : 0;
               const familyColor = !e.hidden && e.family ? CARD_TYPE_COLOR[e.family] : undefined;
               return (
               <div
                 key={e.entityId}
-                className={`board-entity${e.hidden ? " hidden" : ""}${artUrl ? " board-entity--art" : ""}${e.takingDamage ? " hit" : ""}`}
+                className={`board-entity${e.hidden ? " hidden" : ""}${artUrl ? " board-entity--art" : ""}${e.takingDamage ? " hit" : ""}${e.invulnerable ? " be-guarded" : ""}${e.bossGuard ? " be-guard" : ""}`}
                 style={{
                   left: e.x * STRIDE,
                   top: e.y * STRIDE,
@@ -442,6 +480,11 @@ export function Board({
                   backgroundImage: artUrl ? `url("${artUrl}")` : undefined,
                 }}
               >
+                {e.invulnerable && (
+                  <span className="be-shield" title="Defeat the guardians to expose the boss">
+                    {"\uD83D\uDEE1"}
+                  </span>
+                )}
                 {familyColor && (
                   <>
                     <span className="be-ring" style={{ borderColor: familyColor }} />
@@ -454,8 +497,18 @@ export function Board({
                     </span>
                   </>
                 )}
+                {!e.hidden && e.kind === "minion" && e.rewardGold > 0 && (
+                  <span className="be-coin" title={`Bribe with a ring for ${e.rewardGold}g`}>
+                    {"\uD83E\uDE99"}
+                  </span>
+                )}
                 {!e.hidden && e.cooldownTotalMs > 0 && (
-                  <div className="be-charge" style={{ height: `${charge * 100}%` }} />
+                  <ChargeBar
+                    className="be-charge"
+                    totalMs={e.cooldownTotalMs}
+                    remainingMs={e.cooldownRemainingMs}
+                    active={e.attacking}
+                  />
                 )}
                 {!artUrl && (
                   <span className="be-label">{e.hidden ? "?" : ENTITY_LABEL[e.kind] ?? e.kind}</span>
@@ -484,17 +537,13 @@ export function Board({
                 const name = tierStats?.name ?? c.defId;
                 const artUrl = tierStats ? cardArtUrl(tierStats.art) : null;
                 const mine = c.ownerId === sessionId;
-                const charge =
-                  c.attacking && c.cooldownTotalMs > 0
-                    ? Math.max(0, Math.min(1, 1 - c.cooldownRemainingMs / c.cooldownTotalMs))
-                    : 0;
                 const showFooter = c.maxHealth > 0 && (c.attacking || c.takingDamage);
                 const auraClass = AURA_CLASS[c.defId] ?? "";
                 return (
                   <div
                     key={c.instanceId}
                     data-card-id={c.instanceId}
-                    className={`board-card${c.takingDamage ? " hit" : ""}${artUrl ? " board-card--art" : ""}${auraClass ? " " + auraClass : ""}`}
+                    className={`board-card${c.takingDamage ? " hit" : ""}${artUrl ? " board-card--art" : ""}${auraClass ? " " + auraClass : ""}${c.frozenMs > 0 ? " frozen" : ""}`}
                     style={{
                       left: c.x * STRIDE,
                       top: c.y * STRIDE,
@@ -505,10 +554,13 @@ export function Board({
                       cursor: mine ? "grab" : "default",
                     }}
                     onPointerDown={
-                      mine ? (e) => startCardDrag(e, c.instanceId, c.w, c.h) : undefined
+                      mine
+                        ? (e) => startCardDrag(e, c.instanceId, c.defId, c.tier, c.w, c.h)
+                        : undefined
                     }
                   >
                     {auraClass && <span className="card-aura" />}
+                    {c.frozenMs > 0 && <span className="frost-overlay" aria-hidden />}
                     {c.defId === "wind" && (
                       <span className="wind-loop" aria-hidden>
                         <i />
@@ -517,7 +569,17 @@ export function Board({
                         <i />
                       </span>
                     )}
-                    <div className="bc-charge" style={{ height: `${charge * 100}%` }} />
+                    <ChargeBar
+                      className="bc-charge"
+                      totalMs={c.cooldownTotalMs}
+                      remainingMs={c.cooldownRemainingMs}
+                      active={c.attacking}
+                    />
+                    {c.shield > 0 && (
+                      <span className="bc-shield" title={`Shielded by walls (${c.shield})`}>
+                        {"\uD83D\uDEE1"} {c.shield}
+                      </span>
+                    )}
                     <span className="bc-name">{name}</span>
                     <div className="bc-frame" style={{ boxShadow: `inset 0 0 0 3px ${TIER_COLOR[c.tier]}` }} />
                     {showFooter && (
@@ -537,6 +599,8 @@ export function Board({
 
           <div className="board-preview" ref={previewRef} style={{ opacity: 0 }} />
         </div>
+        {/* VFX ride the camera transform so strikes/numbers/dust pan with the board. */}
+        <div className="board-fx" ref={fxRootRef} aria-hidden />
       </div>
 
       <div className="sellzone" ref={sellzoneRef}>

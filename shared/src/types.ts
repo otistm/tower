@@ -150,6 +150,13 @@ export interface AbilityDef {
   bonusVsType?: CardType;
   /** Damage multiplier applied when a target matches `bonusVsType` (e.g. 1.5). */
   bonusMultiplier?: number;
+  /**
+   * For Attack abilities: when true the hit lands on *every* enemy in range
+   * (area of effect). When false/omitted a point shape (Nearest/Adjacent) only
+   * strikes the single nearest foe. Area shapes (Row/Column/Surrounding/Global)
+   * are always AoE regardless of this flag.
+   */
+  aoe?: boolean;
   /** Human-readable flavor of what happens. */
   description: string;
 }

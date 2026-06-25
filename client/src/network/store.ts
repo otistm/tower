@@ -7,6 +7,7 @@ import {
   PickUpCardPayload,
   SellCardPayload,
   ServerEvent,
+  SetViewportPayload,
 } from "@tower/shared";
 import { create } from "zustand";
 import { ROOM_NAME, SERVER_URL } from "../config";
@@ -65,6 +66,7 @@ function serializeState(state: any): GameSnapshot {
     attacking: c.attacking,
     takingDamage: c.takingDamage,
     shield: c.shield,
+    frozenMs: c.frozenMs,
   }));
 
   const entities = mapToRecord<any, EntitySnapshot>(state.entities, "entityId", (e) => ({
@@ -87,6 +89,8 @@ function serializeState(state: any): GameSnapshot {
     rewardGold: e.rewardGold,
     attacking: e.attacking,
     takingDamage: e.takingDamage,
+    invulnerable: e.invulnerable,
+    bossGuard: e.bossGuard,
   }));
 
   const players = mapToRecord<any, PlayerSnapshot>(state.players, "id", (p) => {
@@ -122,12 +126,14 @@ function serializeState(state: any): GameSnapshot {
     floor: state.floor,
     maxFloor: state.maxFloor,
     weather: state.weather,
+    biome: state.biome,
     boardWidth: state.boardWidth,
     boardHeight: state.boardHeight,
     timeRemainingMs: state.timeRemainingMs,
     keyAcquired: state.keyAcquired,
     killStreak: state.killStreak,
     shopLocked: state.shopLocked,
+    rerollCount: state.rerollCount,
     cards,
     entities,
     players,
@@ -148,11 +154,14 @@ interface GameStoreState {
   sessionId: string | null;
   snapshot: GameSnapshot | null;
   selectedCell: { x: number; y: number } | null;
+  /** Cells the currently-dragged card would attack/affect (drag-time preview). */
+  attackPreview: { x: number; y: number }[];
   toasts: ToastMessage[];
 
   connect: (name: string) => Promise<void>;
   disconnect: () => void;
   selectCell: (cell: { x: number; y: number } | null) => void;
+  setAttackPreview: (cells: { x: number; y: number }[]) => void;
   pushToast: (text: string, level?: ToastMessage["level"]) => void;
 
   buyCard: (offerIndex: number) => void;
@@ -163,9 +172,14 @@ interface GameStoreState {
   readyUp: () => void;
   rerollShop: () => void;
   lockShop: () => void;
+  restart: () => void;
+  /** Tell the server how many board cells the client wants visible. */
+  reportViewport: (cols: number, rows: number) => void;
 }
 
 let toastId = 0;
+/** Last viewport sent, so we only message the server when it actually changes. */
+let lastViewport = { cols: 0, rows: 0 };
 
 export const useGameStore = create<GameStoreState>((set, get) => ({
   status: "idle",
@@ -174,12 +188,14 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   sessionId: null,
   snapshot: null,
   selectedCell: null,
+  attackPreview: [],
   toasts: [],
 
   connect: async (name: string) => {
     if (get().status === "connecting" || get().status === "connected") return;
     set({ status: "connecting", error: null });
     try {
+      lastViewport = { cols: 0, rows: 0 };
       const client = new Client(SERVER_URL);
       const room = await client.joinOrCreate(ROOM_NAME, { name });
 
@@ -195,6 +211,9 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
       });
       room.onMessage(ServerEvent.FloorCleared, (msg: { floor: number }) => {
         get().pushToast(`Floor ${msg.floor} cleared! The key is yours.`, "info");
+      });
+      room.onMessage(ServerEvent.BossVulnerable, () => {
+        get().pushToast("Guardians down — the boss is exposed!", "warn");
       });
       room.onMessage(ServerEvent.GoldAwarded, (msg: GoldAward) => emitGoldAwarded(msg));
       room.onMessage(ServerEvent.AbilityFired, (msg: AbilityFiredVfx) => emitAbilityFired(msg));
@@ -216,10 +235,13 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
 
   disconnect: () => {
     get().room?.leave();
+    lastViewport = { cols: 0, rows: 0 };
     set({ status: "idle", room: null, snapshot: null });
   },
 
   selectCell: (cell) => set({ selectedCell: cell }),
+
+  setAttackPreview: (cells) => set({ attackPreview: cells }),
 
   pushToast: (text, level = "info") => {
     const id = ++toastId;
@@ -246,4 +268,18 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   readyUp: () => get().room?.send(ClientMessage.ReadyUp, {}),
   rerollShop: () => get().room?.send(ClientMessage.RerollShop, {}),
   lockShop: () => get().room?.send(ClientMessage.LockShop, {}),
+  restart: () => get().room?.send(ClientMessage.Restart, {}),
+  reportViewport: (cols, rows) => {
+    const room = get().room;
+    if (!room) return;
+    if (cols === lastViewport.cols && rows === lastViewport.rows) return;
+    lastViewport = { cols, rows };
+    room.send(ClientMessage.SetViewport, { cols, rows } satisfies SetViewportPayload);
+  },
 }));
+
+// DEV-only playtest hook: lets automated tests drive/inspect the game via the
+// browser console (window.__tower.getState()). Stripped from production builds.
+if (typeof window !== "undefined" && import.meta.env.DEV) {
+  (window as unknown as { __tower: typeof useGameStore }).__tower = useGameStore;
+}

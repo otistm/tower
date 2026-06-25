@@ -25,7 +25,8 @@ export const BALANCE = {
   readyTimeoutMs: 30_000,
 
   shop: {
-    size: 5,
+    size: 4,
+    /** Base reroll cost; each successive reroll on a floor costs +1 more. */
     rerollCost: 1,
     /** Per-floor cost inflation applied to a card's base buy cost. */
     costFloorScale: 0.15,

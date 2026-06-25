@@ -24,6 +24,10 @@ export enum ClientMessage {
   RerollShop = "rerollShop",
   /** Toggle the shop lock so offers persist into the next floor. */
   LockShop = "lockShop",
+  /** Start a fresh climb after a Defeat/Victory. */
+  Restart = "restart",
+  /** Report the client's visible board size (in cells) so the board can grow. */
+  SetViewport = "setViewport",
 }
 
 /** Server -> Client one-off (non-state) events for transient UI feedback. */
@@ -38,6 +42,8 @@ export enum ServerEvent {
   GoldAwarded = "goldAwarded",
   /** Floor cleared / key acquired. */
   FloorCleared = "floorCleared",
+  /** A boss's guardians were all defeated; the boss is now vulnerable. */
+  BossVulnerable = "bossVulnerable",
   /** Trade request directed at a player. */
   TradeRequest = "tradeRequest",
   /** Generic toast/log message. */
@@ -81,6 +87,13 @@ export interface RespondTradePayload {
 
 export interface InspectPayload {
   pos: GridPos;
+}
+
+export interface SetViewportPayload {
+  /** Number of board columns the client wants visible (incl. discovery pad). */
+  cols: number;
+  /** Number of board rows the client wants visible (incl. discovery pad). */
+  rows: number;
 }
 
 export interface AbilityFiredEvent {

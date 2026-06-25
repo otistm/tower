@@ -17,6 +17,13 @@ const WEATHER_ICON: Record<string, string> = {
   heat: "Heat",
 };
 
+const BIOME_LABEL: Record<string, string> = {
+  verdant: "Verdant Wilds",
+  ashen: "Ashen Foundry",
+  frost: "Frostspire",
+  summit: "The Summit",
+};
+
 interface HudProps {
   shopLocked: boolean;
   onOpenShop: () => void;
@@ -37,6 +44,7 @@ export function Hud({ shopLocked, onOpenShop }: HudProps) {
           Floor {snapshot.floor}
           {snapshot.maxFloor ? ` / ${snapshot.maxFloor}` : ""}
         </div>
+        <div className="hud__biome">{BIOME_LABEL[snapshot.biome] ?? snapshot.biome}</div>
         <div className="hud__weather">{WEATHER_ICON[snapshot.weather] ?? snapshot.weather}</div>
         <div className={`hud__key ${snapshot.keyAcquired ? "hud__key--has" : ""}`}>
           {snapshot.keyAcquired ? "Key acquired" : "Find the key"}

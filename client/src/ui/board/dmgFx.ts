@@ -1,9 +1,11 @@
 /**
  * Floating combat text + screen shake. The server already emits a `Damage` event
  * for every hit; the store forwards it here and the Board converts the cell to a
- * screen point. Numbers are the language of an autobattler - making them pop
+ * board-local point. Numbers are the language of an autobattler - making them pop
  * (and punching the camera on a crit) turns silent HP drain into a fight you feel.
+ * They live in the camera-transformed fx layer so they pan with the board.
  */
+import { fxParent } from "./fxRoot";
 
 const reduce =
   typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion:reduce)").matches;
@@ -18,14 +20,14 @@ export function floatDamage(
   amount: number,
   opts: { crit?: boolean; reflected?: boolean } = {},
 ): void {
-  if (active >= MAX_ACTIVE) return;
+  if (active >= MAX_ACTIVE || amount <= 0) return;
   const el = document.createElement("div");
   el.className =
     "dmg-num" + (opts.crit ? " crit" : "") + (opts.reflected ? " reflected" : "");
   el.textContent = opts.crit ? `${amount}!` : `${amount}`;
   el.style.left = `${x}px`;
   el.style.top = `${y}px`;
-  document.body.appendChild(el);
+  fxParent().appendChild(el);
   active++;
 
   const drift = (Math.random() - 0.5) * 30;

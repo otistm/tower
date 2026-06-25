@@ -99,6 +99,30 @@ body,
 .app {
   position: fixed;
   inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+.app__header {
+  flex: 0 0 auto;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  background: linear-gradient(180deg, #0b1020 0%, #0a0e1a 100%);
+  border-bottom: 1px solid var(--panel-border);
+  box-shadow: 0 6px 18px -10px rgba(0, 0, 0, 0.8);
+  z-index: 30;
+}
+.app__board-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+.app__hand-pane {
+  flex: 0 0 25%;
+  height: 25%;
+  min-height: 0;
+  position: relative;
+  z-index: 10;
 }
 .ui-overlay {
   position: absolute;
@@ -112,7 +136,7 @@ body,
 
 /* ---------------- DOM board + camera ---------------- */
 .board-viewport {
-  position: fixed;
+  position: absolute;
   inset: 0;
   overflow: hidden;
   z-index: 1;
@@ -127,7 +151,7 @@ body,
 
 /* Camera debug panel (dev). Toggle with ` or ?cameraDebug=1 */
 .camera-debug-toggle {
-  position: fixed;
+  position: absolute;
   top: 62px;
   right: 10px;
   z-index: 3200;
@@ -148,7 +172,7 @@ body,
   border-color: #64748b;
 }
 .camera-debug {
-  position: fixed;
+  position: absolute;
   top: 62px;
   right: 10px;
   z-index: 3200;
@@ -364,8 +388,81 @@ body,
   box-shadow:
     0 0 12px 2px rgba(239, 68, 68, 0.85),
     inset 0 6px 14px -6px rgba(255, 255, 255, 0.6);
-  transition: height 0.1s linear;
+  /* Height is driven by a per-frame client tween (ChargeBar); no CSS transition. */
   pointer-events: none;
+}
+.be-coin {
+  position: absolute;
+  top: 1px;
+  right: 2px;
+  z-index: 5;
+  font-size: 13px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 2px #000a);
+  pointer-events: none;
+}
+
+/* --- Boss guardian mechanic --- */
+/* A guarded boss is wrapped in a shimmering, impenetrable barrier. */
+.board-entity.be-guarded {
+  box-shadow: inset 0 0 0 2px #00000055, 0 0 0 3px rgba(120, 200, 255, 0.55),
+    0 0 22px 4px rgba(120, 200, 255, 0.4);
+}
+.board-entity.be-guarded::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 2px solid rgba(150, 215, 255, 0.7);
+  pointer-events: none;
+  animation: guardPulse 1.5s ease-in-out infinite;
+}
+@keyframes guardPulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+.be-shield {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  z-index: 6;
+  font-size: 16px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 2px #000a);
+  pointer-events: none;
+}
+/* Guardians read as small, important adds with a cyan tell. */
+.board-entity.be-guard {
+  box-shadow: inset 0 0 0 2px #00000055, 0 0 0 2px rgba(120, 200, 255, 0.6);
+}
+
+/* --- Frozen / rooted card (boss signature) --- */
+.board-card.frozen {
+  filter: saturate(0.6) brightness(1.05);
+}
+.frost-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  border-radius: inherit;
+  background: linear-gradient(135deg, rgba(150, 220, 255, 0.35), rgba(90, 160, 220, 0.18));
+  box-shadow: inset 0 0 0 2px rgba(190, 235, 255, 0.7);
+  pointer-events: none;
+  animation: frostShimmer 1.2s ease-in-out infinite;
+}
+@keyframes frostShimmer {
+  0%,
+  100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 .be-ring {
   position: absolute;
@@ -465,7 +562,24 @@ body,
   box-shadow:
     0 0 12px 2px rgba(255, 196, 80, 0.9),
     inset 0 6px 14px -6px rgba(255, 255, 255, 0.7);
-  transition: height 0.1s linear;
+  /* Height is driven by a per-frame client tween (ChargeBar); no CSS transition. */
+  pointer-events: none;
+}
+.bc-shield {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 5px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #e0f2fe;
+  background: rgba(14, 116, 144, 0.78);
+  box-shadow: inset 0 0 0 1px #67e8f9aa, 0 2px 6px -2px #000a;
   pointer-events: none;
 }
 .bc-hpbar {
@@ -500,6 +614,40 @@ body,
 .board-preview.bad {
   background: #ef444433;
   box-shadow: inset 0 0 0 3px #ef4444;
+}
+
+/* Threat preview: cells the held card would attack/affect, shown while dragging. */
+.attack-cell {
+  position: absolute;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 2;
+  background: rgba(248, 113, 113, 0.22);
+  box-shadow: inset 0 0 0 2px rgba(248, 113, 113, 0.7);
+  animation: attack-cell-pulse 0.9s ease-in-out infinite;
+}
+@keyframes attack-cell-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Camera-tracked VFX layer: lives inside the board transform so fx pan with it.
+   Zero-size + visible overflow so absolutely/fixed-positioned fx anchor to the
+   board origin and aren't clipped. */
+.board-fx {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 6;
 }
 
 .coin-fx {
@@ -689,7 +837,7 @@ body,
 }
 
 .sellzone {
-  position: fixed;
+  position: absolute;
   top: 56px;
   left: 50%;
   transform: translateX(-50%) translateY(-14px);
@@ -716,17 +864,14 @@ body,
 
 /* ---------------- HUD ---------------- */
 .hud {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  position: relative;
+  width: 100%;
   height: 56px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
-  background: linear-gradient(180deg, rgba(11, 16, 32, 0.95), rgba(11, 16, 32, 0));
-  gap: 16px;
+  padding: 8px 16px;
+  gap: 12px;
 }
 .hud__left,
 .hud__center,
@@ -744,6 +889,15 @@ body,
   color: var(--muted);
   font-size: 13px;
   background: rgba(255, 255, 255, 0.06);
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+.hud__biome {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  background: rgba(120, 200, 255, 0.12);
   padding: 4px 10px;
   border-radius: 8px;
 }
@@ -821,88 +975,132 @@ body,
 /* ---------------- Shop (centered modal over blurred board) ---------------- */
 .board-blur {
   position: fixed;
-  inset: 0;
-  z-index: 5;
+  /* Blur the whole board (down to the hand pane), including the strip of board
+     left visible below the shorter shop panel. The hand pane sits below this, so
+     the player's hand stays crisp and readable while shopping. */
+  inset: 0 0 25% 0;
+  z-index: 40;
   background: rgba(5, 8, 18, 0.5);
   backdrop-filter: blur(7px);
   -webkit-backdrop-filter: blur(7px);
 }
 .shop-modal {
   position: fixed;
-  inset: 0;
+  /* Sit above the hand pane (plus a small margin for cards that overflow it
+     upward) so players can still see and use their full hand while shopping.
+     Kept just tall enough that a single row of offers fits without scrolling. */
+  inset: 0 0 calc(25% + 30px) 0;
   display: flex;
   align-items: center;
   justify-content: center;
   pointer-events: none;
-  z-index: 12;
+  z-index: 50;
 }
 .shop {
   position: relative;
   pointer-events: auto;
-  width: min(440px, 92vw);
+  width: 100%;
+  height: 100%;
   background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 16px;
-  padding: 18px;
-  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.7);
-  animation: shopIn 0.18s ease;
+  border: none;
+  border-bottom: 1px solid var(--panel-border);
+  border-radius: 0;
+  padding: clamp(16px, 2.5vw, 40px);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 20px 60px -20px rgba(0, 0, 0, 0.7);
+  animation: shopIn 0.2s ease;
 }
 @keyframes shopIn {
   from {
-    transform: translateY(12px) scale(0.97);
+    transform: scale(0.99);
     opacity: 0;
   }
 }
 .shop__header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.shop__title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
 }
 .shop__close {
   margin-left: auto;
   border: none;
   background: #ffffff14;
   color: var(--text);
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 18px;
+}
+.shop__close:hover {
+  background: #ffffff22;
 }
 .shop__hint {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--muted);
-  margin: 10px 2px 4px;
   text-align: center;
+  line-height: 1.6;
+  margin: auto 0;
 }
 .shop__header h2 {
-  font-size: 16px;
+  font-size: clamp(24px, 3vw, 36px);
   margin: 0;
+  letter-spacing: 0.5px;
+}
+.shop__floor {
+  font-size: 16px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 2px;
 }
 .shop__gold {
   color: var(--gold);
-  font-weight: 700;
+  font-weight: 800;
+  font-size: 22px;
+}
+
+/* Two-column body: offers grid on the left, detail sidebar on the right. */
+.shop__body {
+  flex: 1;
+  display: flex;
+  gap: 24px;
+  min-height: 0;
 }
 .shop__offers {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 50vh;
-  overflow-y: auto;
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-auto-rows: max-content;
+  gap: 16px;
+  align-content: start;
+  /* The modal is sized so a single row of offers fits; no scrollbar needed. */
+  overflow: visible;
+  padding-right: 6px;
 }
 .shop__offer {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   background: rgba(0, 0, 0, 0.3);
-  border-radius: 10px;
-  padding: 8px;
+  border-radius: 14px;
+  padding: 16px;
   border: 1px solid transparent;
   cursor: pointer;
+  transition: transform 0.12s ease, background 0.12s ease;
 }
 .shop__offer:hover {
   background: rgba(255, 255, 255, 0.06);
+  transform: translateY(-3px);
 }
 .shop__offer--sel {
   border-color: var(--accent);
@@ -912,28 +1110,40 @@ body,
   opacity: 0.4;
 }
 
+.shop__sidebar {
+  flex: 0 0 340px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  overflow: hidden;
+}
 /* Detail panel for the selected shop offer (reuses inspector content styles). */
 .shop__detail {
-  margin: 10px 0 4px;
-  padding: 12px;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  max-height: 38vh;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 18px;
   overflow-y: auto;
 }
 .shop__detail-buy {
   width: 100%;
-  margin-top: 10px;
+  margin-top: auto;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  font-size: 15px;
 }
 .shop__offer-info {
-  flex: 1;
   display: flex;
   flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 2px;
 }
 .shop__offer-name {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 15px;
 }
 .shop__offer-rarity {
   font-size: 11px;
@@ -946,8 +1156,9 @@ body,
   background: var(--accent);
   color: #06121f;
   font-weight: 700;
-  padding: 8px 10px;
+  padding: 8px 14px;
   cursor: pointer;
+  width: 100%;
 }
 .shop__buy:disabled {
   background: #334155;
@@ -956,8 +1167,10 @@ body,
 }
 .shop__actions {
   display: flex;
-  gap: 8px;
-  margin-top: 12px;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--panel-border);
 }
 .shop__reroll {
   flex: 0 0 auto;
@@ -965,31 +1178,19 @@ body,
   background: transparent;
   color: var(--text);
   border-radius: 8px;
-  padding: 8px 12px;
+  padding: 12px 22px;
+  font-size: 15px;
   cursor: pointer;
-}
-.shop__lock {
-  flex: 0 0 auto;
-  border: 1px solid var(--panel-border);
-  background: transparent;
-  color: var(--text);
-  border-radius: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
-}
-.shop__lock--on {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: rgba(89, 156, 231, 0.12);
 }
 .shop__ready {
-  flex: 1;
+  flex: 0 0 auto;
   border: none;
   border-radius: 8px;
   background: linear-gradient(90deg, var(--ok), #16a34a);
   color: #04210f;
   font-weight: 800;
-  padding: 8px;
+  font-size: 16px;
+  padding: 12px 32px;
   cursor: pointer;
 }
 .shop__ready--on {
@@ -999,20 +1200,21 @@ body,
 
 /* ---------------- Carousel ---------------- */
 .carousel {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   padding: 10px 12px 14px;
-  background: linear-gradient(0deg, rgba(11, 16, 32, 0.96), rgba(11, 16, 32, 0));
+  background: linear-gradient(0deg, rgba(11, 16, 32, 0.96), rgba(11, 16, 32, 0.85));
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 .carousel__scroll {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 10px;
-  overflow-x: auto;
+  /* Cards overflow the strip rather than introducing a scrollbar. */
+  overflow: visible;
   padding: 6px 4px 10px;
-  scrollbar-width: thin;
 }
 .carousel__empty {
   color: var(--muted);
@@ -1064,9 +1266,10 @@ body,
 
 /* ---------------- Inspector ---------------- */
 .inspector {
-  position: absolute;
+  position: fixed;
   top: 64px;
   right: 16px;
+  z-index: 45;
   width: 320px;
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -1199,7 +1402,7 @@ body,
 /* ---------------- Toasts ---------------- */
 .toasts {
   position: absolute;
-  bottom: 130px;
+  bottom: 16px;
   right: 16px;
   display: flex;
   flex-direction: column;
@@ -1231,8 +1434,9 @@ body,
 
 /* ---------------- Overlays ---------------- */
 .overlay {
-  position: absolute;
+  position: fixed;
   inset: 0;
+  z-index: 100;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1268,4 +1472,14 @@ body,
   color: #06121f;
   font-weight: 700;
   cursor: pointer;
+}
+.overlay__actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+.overlay__card .overlay__btn-secondary {
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--text);
 }

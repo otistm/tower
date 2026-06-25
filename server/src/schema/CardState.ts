@@ -42,6 +42,12 @@ export class CardState extends Schema {
   /** Temporary shield pool absorbed before health (from walls/mirrors). */
   @type("int32") shield: number = 0;
 
+  /**
+   * Frozen/rooted timer (ms). While >0 the card cannot charge or fire — set by
+   * boss signatures (entangle/deep freeze). Counts down each tick.
+   */
+  @type("float32") frozenMs: number = 0;
+
   /** Summoned token (from a Spawn ability): not bought, not returned to hand. */
   @type("boolean") token: boolean = false;
   /** For tokens: ms of life left on the board before fading (0 = permanent). */

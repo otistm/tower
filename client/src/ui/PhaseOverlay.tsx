@@ -5,6 +5,7 @@ import { useGameStore } from "../network/store";
 export function PhaseOverlay() {
   const snapshot = useGameStore((s) => s.snapshot);
   const disconnect = useGameStore((s) => s.disconnect);
+  const restart = useGameStore((s) => s.restart);
   if (!snapshot) return null;
 
   if (snapshot.phase === GamePhase.FloorCleared) {
@@ -24,7 +25,12 @@ export function PhaseOverlay() {
         <div className="overlay__card">
           <h1>The Climb Ends</h1>
           <p>You reached floor {snapshot.floor}. The tower claims another party.</p>
-          <button onClick={disconnect}>Return to Lobby</button>
+          <div className="overlay__actions">
+            <button onClick={restart}>Climb Again</button>
+            <button className="overlay__btn-secondary" onClick={disconnect}>
+              Return to Lobby
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -36,7 +42,12 @@ export function PhaseOverlay() {
         <div className="overlay__card">
           <h1>Tower Conquered!</h1>
           <p>Against all odds, your party reached the summit.</p>
-          <button onClick={disconnect}>New Climb</button>
+          <div className="overlay__actions">
+            <button onClick={restart}>New Climb</button>
+            <button className="overlay__btn-secondary" onClick={disconnect}>
+              Return to Lobby
+            </button>
+          </div>
         </div>
       </div>
     );

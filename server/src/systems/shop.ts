@@ -1,8 +1,11 @@
 import { CARD_CATALOG, CardTier, Rarity, getTierStats } from "@tower/shared";
 import { ArraySchema } from "@colyseus/schema";
 import { BALANCE } from "../config/balance.js";
+import { STARTER_POOL } from "../config/progression.js";
 import { GameState } from "../schema/GameState.js";
 import { ShopOffer } from "../schema/ShopOffer.js";
+
+export { STARTER_POOL };
 
 const RARITY_WEIGHT: Record<string, number> = {
   [Rarity.Common]: 50,
@@ -27,21 +30,6 @@ function eligiblePool(state: GameState): string[] {
   // Never offer summoned tokens (e.g. bees) even if one slips into a collection.
   return Array.from(set).filter((id) => !CARD_CATALOG[id]?.token);
 }
-
-/** A small basic pool so the first shop has stock and shows off every verb. */
-export const STARTER_POOL = [
-  "moss",
-  "wind",
-  "wall",
-  "tiger",
-  "lawnmower",
-  "furnace",
-  "fear_totem",
-  "diamond_ring",
-  "rocket",
-  "beehive",
-  "lockpick",
-];
 
 function weightedPick(pool: string[]): string {
   const weights = pool.map((id) => RARITY_WEIGHT[CARD_CATALOG[id]?.rarity] ?? 10);
